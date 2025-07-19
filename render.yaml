@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: yt-music-api
+    env: node
+    plan: free
+    buildCommand: |
+      pip install -U yt-dlp
+      npm install
+    startCommand: node server.js
+    autoDeploy: true
