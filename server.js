@@ -1,42 +1,77 @@
-const express = require('express');
-const cors = require('cors');
-const { exec } = require('child_process');
-
+// server.js
+const express = require("express");
+const cors = require("cors");
+const { execSync, spawn } = require("child_process");
 const app = express();
-app.use(cors());
-
 const PORT = process.env.PORT || 3000;
 
-app.get('/', (req, res) => {
-  res.send('🎵 YouTube Music API is running...');
+// Middleware
+app.use(cors());
+app.use(express.static("public"));
+
+// 🔧 Ensure yt-dlp is available
+try {
+  execSync("which yt-dlp", { stdio: "ignore" });
+} catch {
+  console.log("yt-dlp not found. Downloading...");
+  execSync("curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && chmod +x /usr/local/bin/yt-dlp");
+}
+
+// ✅ Test root
+app.get("/", (req, res) => {
+  res.send("🎵 YouTube Music API is running...");
 });
 
-app.get('/info', (req, res) => {
-  const url = req.query.url;
-  if (!url) return res.status(400).send('Missing URL');
+// 🧠 Get video info
+app.get("/info", (req, res) => {
+  const videoURL = req.query.url;
+  if (!videoURL) return res.status(400).json({ error: "Missing YouTube URL" });
 
-  exec(`yt-dlp -J "${url}"`, (err, stdout, stderr) => {
-    if (err) return res.status(500).send(stderr);
+  const yt = spawn("yt-dlp", ["--dump-json", videoURL]);
+
+  let data = "";
+  yt.stdout.on("data", chunk => data += chunk);
+  yt.stderr.on("data", err => console.error("yt-dlp error:", err.toString()));
+
+  yt.on("close", code => {
+    if (code !== 0) return res.status(500).json({ error: "yt-dlp failed" });
     try {
-      res.json(JSON.parse(stdout));
-    } catch (e) {
-      res.status(500).send("Failed to parse JSON");
+      const json = JSON.parse(data);
+      res.json(json);
+    } catch (err) {
+      res.status(500).json({ error: "Failed to parse JSON" });
     }
   });
 });
 
-app.get('/stream', (req, res) => {
-  const url = req.query.url;
-  if (!url) return res.status(400).send('Missing URL');
+// 🎵 Stream/download audio or video
+app.get("/api/download", (req, res) => {
+  const { url, format } = req.query;
+  if (!url || !["mp3", "mp4"].includes(format)) {
+    return res.status(400).json({ error: "Invalid URL or format" });
+  }
 
-  const command = `yt-dlp -f bestaudio -o - "${url}"`;
-  const stream = exec(command, { maxBuffer: 1024 * 1024 * 10 });
+  const args = [
+    "-f",
+    format === "mp3" ? "bestaudio" : "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4",
+    "-o",
+    "-",
+    url
+  ];
 
-  res.setHeader('Content-Type', 'audio/mpeg');
-  stream.stdout.pipe(res);
-  stream.stderr.on('data', data => console.error(data.toString()));
+  if (format === "mp3") args.unshift("-x", "--audio-format", "mp3");
+
+  const yt = spawn("yt-dlp", args);
+
+  res.setHeader("Content-Disposition", `inline; filename="media.${format}"`);
+  res.setHeader("Content-Type", format === "mp3" ? "audio/mpeg" : "video/mp4");
+
+  yt.stdout.pipe(res);
+  yt.stderr.on("data", err => console.error("Download error:", err.toString()));
+  yt.on("error", () => res.status(500).json({ error: "Download failed" }));
 });
 
+// Start server
 app.listen(PORT, () => {
   console.log(`🚀 Server running at http://localhost:${PORT}`);
 });
